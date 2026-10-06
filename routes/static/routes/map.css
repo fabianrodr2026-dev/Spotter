@@ -1,0 +1,2 @@
+body { font-family: system-ui, sans-serif; margin: 2rem; }
+#map { height: min(70vh, 38rem); min-height: 24rem; background: #e7ecef; border: 1px solid #b8c4ca; }

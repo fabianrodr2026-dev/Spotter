@@ -1,0 +1,20 @@
+<!doctype html>
+<html lang="en">
+<head>
+  <meta charset="utf-8">
+  <meta name="viewport" content="width=device-width, initial-scale=1">
+  <title>Route map</title>
+  {% load static %}
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="{% static 'routes/map.css' %}">
+</head>
+<body>
+  <main>
+    <h1>Route map</h1>
+    <p>Route and fuel-stop overlays will appear after planning is implemented.</p>
+    <div id="map" aria-label="Interactive map of the contiguous United States"></div>
+  </main>
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  <script src="{% static 'routes/map.js' %}"></script>
+</body>
+</html>
