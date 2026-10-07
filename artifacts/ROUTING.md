@@ -1,12 +1,9 @@
 # Routing provider integration (Section 5)
 
-The ORS adapter is implemented and live-tested. The user selected ORS for the
-product and supplied a screenshot
-of the free plan for the configured key showing a Directions V2 allowance of
-2,000 requests per day and 40 per minute. Definitive selection remains pending
-verification of the account usage terms. The public account pages did not render
-in web retrieval, and browser access was denied. No payment, account creation,
-or acceptance of terms was performed.
+OpenRouteService (HeiGIT) is the selected routing provider. Free Standard
+access, distance/waypoint limits, credentials, and usage terms were verified
+from public sources on 2026-10-07. The configured API key completed opt-in live
+checks. No payment or account creation was performed in this verification.
 
 ## Sources checked on 2026-10-07
 
@@ -21,13 +18,20 @@ or acceptance of terms was performed.
   GeoJSON LineString, summary distance in meters, duration in seconds, segments,
   and geometry waypoint indices. A live response confirmed that `instructions`
   must be enabled to obtain segments. Instruction text is discarded locally.
-- [Current plans](https://account.heigit.org/info/plans): the user-supplied
-  screenshot shows the free plan's access limits (daily/per minute), including
-  Directions V2 2,000/40. The screenshot does not show the account holder, plan
-  name, or terms; the user identified it as the plan for the configured key.
-- [Terms](https://account.heigit.org/info/tos): verification pending. The
-  screenshot contains quotas only; it does not establish allowed uses, caching,
-  attribution obligations, or other account conditions.
+- [Current plans](https://account.heigit.org/info/plans) and
+  [openrouteservice plans](https://openrouteservice.org/plans/): Standard plan
+  is free for everyone. Directions V2 access limits are 2,000 requests per day
+  and 40 per minute. The configured key's dashboard screenshot matches those
+  Directions quotas.
+- [Terms of service](https://account.heigit.org/info/tos) /
+  [openrouteservice terms](https://openrouteservice.org/terms-of-service/):
+  attribution required as `© openrouteservice by HeiGIT | Data from OpenStreetMap`;
+  results are licensed CC-BY-SA 4.0; data quality is not guaranteed and the
+  service must not be the sole source for safety-critical navigation; exceeding
+  free limits returns errors and repeated violations can temporarily block
+  access. Client-side caching of identical requests is compatible with staying
+  under quota while retaining attribution/license obligations for displayed
+  results.
 
 ## Service use
 
@@ -47,7 +51,7 @@ attempts = session.provider.budget.attempts
 Create one session at the beginning of each planning operation, before local
 station search or optimization. Never reset its budget between stages. Instances
 are sequential and are not thread-safe. The scaffold API still returns HTTP 501;
-Sections 6–9 will integrate station selection, fuel feasibility, and the API/map.
+Sections 7–9 will integrate fuel feasibility and the API/map.
 `through_stops` returns provider geometry; it does not certify fuel feasibility or
 station entrance snapping. Those checks remain Section 8.
 

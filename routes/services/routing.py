@@ -20,7 +20,7 @@ class DrivingRoute:
     leg_distances_miles: tuple[float, ...]
     waypoint_indices: tuple[int, ...] = ()
     provider_version: str = ""
-    attribution: str = "openrouteservice.org | OpenStreetMap contributors"
+    attribution: str = "© openrouteservice by HeiGIT | Data from OpenStreetMap"
 
 
 class RoutingProvider(Protocol):
@@ -138,7 +138,7 @@ def _parse_route(payload: dict, waypoint_count: int) -> DrivingRoute:
             copy.deepcopy(geometry), distance / 1609.344, duration,
             tuple(leg / 1609.344 for leg in legs), indices,
             str(metadata.get("engine", {}).get("version", "unknown")),
-            str(metadata.get("attribution", "openrouteservice.org | OpenStreetMap contributors")),
+            str(metadata.get("attribution", "© openrouteservice by HeiGIT | Data from OpenStreetMap")),
         )
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         raise RoutingError("invalid_response") from None
