@@ -58,7 +58,7 @@ For an isolated import test when PostgreSQL/PostGIS is unavailable, use `--setti
 
 ## Station coordinate enrichment
 
-Section 4 supplies a setup-only command, persistent result cache, coverage/review reports, and a PostGIS spatial-index migration. Offline matching against the bundled enriched OSM sample resolves a small verified set of stations (including some highway exits with unique brand+city evidence) and keeps contested same-brand city groups in review. A full national Overpass tile download raises coverage further but is not required to exercise the pipeline. The GiST index integration test still needs a PostGIS database. See [the source and verification record](artifacts/GEOCODING.md).
+Section 4 supplies a setup-only command, persistent result cache, coverage/review reports, and a PostGIS spatial-index migration verified against a running PostGIS database. Offline matching against the bundled enriched OSM sample resolves two stations with exact OSM store-reference evidence, including a highway-exit station. Same-brand city evidence alone cannot verify a station. This verification sample has only two usable stations out of 6,141 and is insufficient for general route optimization. A full national Overpass tile download can improve candidate coverage but does not by itself verify station identity. See [the source and verification record](artifacts/GEOCODING.md).
 
 The selected location source is OpenStreetMap fuel POIs, obtained as resumable 4° Overpass tiles and matched locally. The default endpoint is `GEOCODING_OVERPASS_URL` (French public Overpass by default). This is a one-time setup workflow, not a public Overpass-backed application service. Use one process on one machine. Completed extracts are retained; successful requests are spaced by at least five seconds, failed requests by at least sixty seconds or the server's longer `Retry-After`. There are no automatic failure retries. Empty ocean tiles are kept; an incomplete/error response is never published as the merged snapshot.
 
@@ -78,7 +78,7 @@ Automatic resolution requires an OSM **fuel node** inside the expected contiguou
 
 `resolved` means these automated checks passed, not that an entrance or truck access was inspected. OSM supplies no calibrated confidence probability, so confidence remains null; `geocoding_details` retains precision, reasons, candidate tags, OSM identities, source versions, and verification method. `location_verified_at` records automated acceptance time. Ambiguous records need independent location evidence before a future reviewed-location workflow can accept them. Coverage includes per-status and per-state counts, usable and excluded totals, and the source scope. Counts for the sample artifact are **not** nationwide coverage.
 
-Future station candidate queries must use `usable_stations()` and the same quality predicate as the `fuelstation_valid_location_gist` partial GiST geography-expression index. The expression is `ST_SetSRID(ST_MakePoint(longitude::double precision, latitude::double precision), 4326)::geography`; the index updates automatically with station coordinates/status. SQLite verifies matching/cache behavior but does not create this PostGIS index. Spatial corridor search remains Section 6. Current route requests never invoke this setup command or download sources.
+Station candidate queries use `usable_stations()` and the same quality predicate as the `fuelstation_valid_location_gist` partial GiST geography-expression index. The expression is `ST_SetSRID(ST_MakePoint(longitude::double precision, latitude::double precision), 4326)::geography`; the index updates automatically with station coordinates/status. SQLite verifies matching/cache behavior but does not create this PostGIS index. Current route requests never invoke this setup command or download sources.
 
 Reproduce the bundled sample offline, without production database credentials:
 
@@ -95,4 +95,12 @@ The second enrichment reuses all 6,141 decisions. With the enriched sample, expe
 
 ## Routing integration
 
-Section 5 provides the ORS adapter, cached route results, a shared planning deadline, and a maximum of three outbound attempts per routing session. The user supplied free-plan limits for the configured key: Directions V2 allows 2,000 requests per day and 40 per minute. See [routing configuration, provider evidence, limitations, and live checks](artifacts/ROUTING.md). The API and fuel-stop selection remain later steps. Account usage-term verification is still pending.
+Section 5 provides the ORS adapter, cached route results, a shared planning deadline, and a maximum of three outbound attempts per routing session. Public Standard-plan limits are Directions V2 2,000/day and 40/minute; driving routes are limited to 6,000 km and 50 waypoints. Attribution and CC-BY-SA 4.0 obligations are recorded in [routing configuration, provider evidence, limitations, and live checks](artifacts/ROUTING.md). Fuel optimization and the finished API remain later steps.
+
+## Station corridor search
+
+Section 6 projects usable stations onto the provider route inside `STATION_CORRIDOR_MILES`, orders them by cumulative driving progress, and keeps prices plus location-quality metadata. Preliminary detour estimates are `2 ×` corridor offset for screening only and are not verified access distances. An empty corridor result is insufficient coverage, not a feasible plan. See [station search notes](artifacts/STATION_SEARCH.md).
+
+## Fuel optimizer and verified stops
+
+Section 7 implements a pure greedy purchase optimizer (50-gallon tank, 10 mpg) for a fixed ordered station sequence, with decimal cost accounting, explicit tolerances, and estimate labeling until access is verified. Section 8 routes through selected purchase stops, snaps waypoints within `STATION_SNAP_TOLERANCE_MILES`, recalculates purchases from verified leg distances, and allows one bounded repair inside the three-attempt routing budget. See [fuel optimizer notes](artifacts/FUEL_OPTIMIZER.md). The HTTP API remains HTTP 501 until Section 9.

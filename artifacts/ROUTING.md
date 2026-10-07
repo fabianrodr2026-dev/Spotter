@@ -51,9 +51,9 @@ attempts = session.provider.budget.attempts
 Create one session at the beginning of each planning operation, before local
 station search or optimization. Never reset its budget between stages. Instances
 are sequential and are not thread-safe. The scaffold API still returns HTTP 501;
-Sections 7–9 will integrate fuel feasibility and the API/map.
-`through_stops` returns provider geometry; it does not certify fuel feasibility or
-station entrance snapping. Those checks remain Section 8.
+Section 9 still exposes the HTTP API/map. Sections 7–8 integrate fuel feasibility
+through `RoutePlanner`: `through_stops` returns provider geometry, and the planner
+certifies fuel feasibility and station entrance snapping before returning a plan.
 
 The target is initial routing plus routing through all chosen stops in one call.
 A single `through_stops(..., repair=True)` is available after the selected-stop
