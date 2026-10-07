@@ -1,6 +1,6 @@
 # Spotter route planner
 
-The Section 2 scaffold provides Django configuration, PostGIS setup, input-shape validation, a health endpoint, and a basic interactive map. It does **not** calculate routes or fuel purchases yet. `POST /api/routes/plan/` validates the coordinate request and returns HTTP 501 for a valid request until later implementation steps are complete. The supplied CSV remains unchanged and has not been imported.
+The Section 2 scaffold provides Django configuration, PostGIS setup, input-shape validation, a health endpoint, and a basic interactive map. It does **not** calculate routes or fuel purchases yet. `POST /api/routes/plan/` validates the coordinate request and returns HTTP 501 for a valid request until later implementation steps are complete. Section 3 provides the fuel-price audit and idempotent importer, verified against an isolated SQLite database. The supplied CSV remains unchanged; run the import command below to populate your configured database.
 
 ## Local setup (PowerShell)
 
@@ -55,3 +55,40 @@ After migrations, import the file:
 The command accepts an optional CSV path and `--report-file PATH`. Its JSON summary reports imported, collapsed, conflicting, and rejected counts. The source audit found 8,151 data rows, 6,738 IDs, 6,141 importable stations, 86 collapsed rows, 1,924 conflict rows across 597 IDs, and zero rejected rows. These counts reconcile to 8,151. Run the audit command above to generate the full local conflict report; it contains station names, addresses, and prices from the supplied CSV. The source includes Canadian province codes; station geography is validated later before route selection. Prices retain their source text and decimal value without currency rounding during import.
 
 For an isolated import test when PostgreSQL/PostGIS is unavailable, use `--settings=config.test_settings`; setting `SPOTTER_TEST_DB_PATH` to a local `.sqlite3` path makes that test database persistent across commands. This is a verification aid, not the configured production database.
+
+## Station coordinate enrichment
+
+Section 4 supplies a setup-only command, persistent result cache, coverage/review reports, and a PostGIS spatial-index migration. Offline matching against the bundled enriched OSM sample resolves a small verified set of stations (including some highway exits with unique brand+city evidence) and keeps contested same-brand city groups in review. A full national Overpass tile download raises coverage further but is not required to exercise the pipeline. The GiST index integration test still needs a PostGIS database. See [the source and verification record](artifacts/GEOCODING.md).
+
+The selected location source is OpenStreetMap fuel POIs, obtained as resumable 4° Overpass tiles and matched locally. The default endpoint is `GEOCODING_OVERPASS_URL` (French public Overpass by default). This is a one-time setup workflow, not a public Overpass-backed application service. Use one process on one machine. Completed extracts are retained; successful requests are spaced by at least five seconds, failed requests by at least sixty seconds or the server's longer `Retry-After`. There are no automatic failure retries. Empty ocean tiles are kept; an incomplete/error response is never published as the merged snapshot.
+
+OpenStreetMap data is stored under [ODbL 1.0 with contributor attribution](https://www.openstreetmap.org/copyright). State polygons come from [Census TIGERweb, 2024 vintage, 1:500,000](https://tigerweb.geo.census.gov/arcgis/rest/services/Generalized_ACS2024/State_County/MapServer/7). Both sources are cached and hashed. The OSM export contains OSM objects, not fuel prices; its attribution and license must accompany redistribution. The original assessment CSV's license is not changed.
+
+After configuring and migrating the database and importing the CSV:
+
+```powershell
+.\.venv\Scripts\python.exe manage.py migrate
+.\.venv\Scripts\python.exe manage.py geocode_stations --download --report-file geocoding-coverage.json --review-report geocoding-review.json --export-osm relevant-osm.json
+.\.venv\Scripts\python.exe manage.py geocode_stations --coverage-only
+```
+
+Without `--download`, enrichment performs no network requests. `--cache-dir PATH` selects the source cache (default `data/geocoding/`); `--osm-file PATH` and `--boundaries-file PATH` accept existing JSON or gzip-compressed JSON. `--dataset SHA256` is required if multiple CSV versions are imported. `--limit N` processes at most N new/changed stations and skips previously completed work, so repeated limited runs advance. Database changes and cached decisions commit together in batches of 100. A failed batch can be replayed. Result keys include source and boundary hashes, station name/aliases/address/city/state, and the matcher version. Negative results are cached too. Changing the source, station input, or matcher invalidates the prior decision. For a deliberate source refresh, use a new cache directory; normal runs reuse their existing snapshots indefinitely.
+
+Automatic resolution requires an OSM **fuel node** inside the expected contiguous-US state polygon, plus one of: (1) unique name + numbered street address + city, (2) unique brand/name whose OSM tags include the station store `#number`, or (3) unique brand/name in that city when the CSV has only one store-numbered station for that brand+city+state. Conflicting country/state tags prevent acceptance. Multiple same-brand stations in one city are left in `review` so they never share one POI. Highway exits without those proofs stay in review. Way/relation bounding-box centers and city centers are never used as station coordinates. Alaska, Hawaii, territories, and Canadian records are unsupported under the existing contiguous-US contract.
+
+`resolved` means these automated checks passed, not that an entrance or truck access was inspected. OSM supplies no calibrated confidence probability, so confidence remains null; `geocoding_details` retains precision, reasons, candidate tags, OSM identities, source versions, and verification method. `location_verified_at` records automated acceptance time. Ambiguous records need independent location evidence before a future reviewed-location workflow can accept them. Coverage includes per-status and per-state counts, usable and excluded totals, and the source scope. Counts for the sample artifact are **not** nationwide coverage.
+
+Future station candidate queries must use `usable_stations()` and the same quality predicate as the `fuelstation_valid_location_gist` partial GiST geography-expression index. The expression is `ST_SetSRID(ST_MakePoint(longitude::double precision, latitude::double precision), 4326)::geography`; the index updates automatically with station coordinates/status. SQLite verifies matching/cache behavior but does not create this PostGIS index. Spatial corridor search remains Section 6. Current route requests never invoke this setup command or download sources.
+
+Reproduce the bundled sample offline, without production database credentials:
+
+```powershell
+$env:SPOTTER_TEST_DB_PATH = "$PWD\geocoding-check.sqlite3"
+.\.venv\Scripts\python.exe manage.py migrate --settings=config.test_settings
+.\.venv\Scripts\python.exe manage.py import_fuel_prices --settings=config.test_settings
+.\.venv\Scripts\python.exe manage.py geocode_stations --osm-file artifacts/osm-fuel-enriched-sample.json --boundaries-file artifacts/us-states-2024.geojson.gz --settings=config.test_settings
+.\.venv\Scripts\python.exe manage.py geocode_stations --osm-file artifacts/osm-fuel-enriched-sample.json --boundaries-file artifacts/us-states-2024.geojson.gz --settings=config.test_settings
+.\.venv\Scripts\python.exe manage.py test --settings=config.test_settings
+```
+
+The second enrichment reuses all 6,141 decisions. With the enriched sample, expect on the order of eight usable stations and contested Amarillo multi-store brands left in review. To verify the production index, run `manage.py test routes.tests.test_geocoding.GeocodingTests.test_postgis_partial_spatial_index_exists_and_is_usable` against configured PostgreSQL/PostGIS with permission to create a test database. That test checks the actual index and query plan; it is explicitly skipped under SQLite.

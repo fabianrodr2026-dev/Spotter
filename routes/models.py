@@ -26,12 +26,20 @@ class FuelStation(models.Model):
     geocoding_source = models.CharField(max_length=100, blank=True)
     geocoding_confidence = models.DecimalField(max_digits=5, decimal_places=4, null=True, blank=True)
     location_verified_at = models.DateTimeField(null=True, blank=True)
+    geocoding_key = models.CharField(max_length=64, blank=True, db_index=True)
+    geocoding_details = models.JSONField(default=dict)
 
     class Meta:
         constraints = [
             models.UniqueConstraint(fields=["dataset", "source_station_id"], name="unique_station_per_dataset"),
         ]
         indexes = [models.Index(fields=["dataset", "state", "city"])]
+
+
+class StationGeocodeCache(models.Model):
+    key = models.CharField(max_length=64, primary_key=True)
+    result = models.JSONField()
+    created_at = models.DateTimeField(auto_now_add=True)
 
 
 class FuelPriceSourceRow(models.Model):
