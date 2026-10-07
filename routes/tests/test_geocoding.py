@@ -105,10 +105,15 @@ class GeocodingTests(TestCase):
                 self.assertIsNone(station.location_verified_at)
         self.assertFalse(usable_stations().exists())
 
-    def test_unique_brand_store_number_resolves_highway_exit_without_city_center(self):
+    def test_highway_exit_requires_matching_store_number(self):
         station = self.station(name="Example Fuel #99", address="I-40 Exit 10")
         other_city = poi(2, lon=-102.1, city="Other", name="Example Fuel")
         enrich_stations(FuelStation.objects.filter(pk=station.pk), resolver([poi(name="Example Fuel"), other_city]))
+        station.refresh_from_db()
+        self.assertEqual(station.geocoding_status, "review")
+        self.assertIsNone(station.longitude)
+        self.assertEqual(station.geocoding_details["reason"], "ambiguous_highway_exit_or_intersection")
+        enrich_stations(FuelStation.objects.filter(pk=station.pk), resolver([poi(name="Example Fuel #99"), other_city], "numbered"))
         station.refresh_from_db()
         self.assertEqual(station.geocoding_status, "resolved")
         self.assertEqual(station.longitude, Decimal("-102"))
@@ -119,6 +124,33 @@ class GeocodingTests(TestCase):
         ambiguous.refresh_from_db()
         self.assertEqual(ambiguous.geocoding_status, "review")
         self.assertIsNone(ambiguous.latitude)
+
+    def test_contested_brand_city_changes_cache_key(self):
+        station = self.station(name="Example Fuel #99", address="I-40 Exit 10")
+        source = resolver([poi(name="Example Fuel")])
+        first_key = source.key(station)
+        from routes.services.geocoding import contested_brand_cities
+        self.station("2", name="Example Fuel #100", address="I-40 Exit 11")
+        contested = OsmStationResolver(
+            {"elements": [poi(name="Example Fuel")]},
+            StateBoundaries(boundary_document()), "source", "boundaries",
+            contested_brands=contested_brand_cities(FuelStation.objects.all()),
+        )
+        self.assertNotEqual(first_key, contested.key(station))
+        enrich_stations(FuelStation.objects.filter(pk=station.pk), contested)
+        station.refresh_from_db()
+        self.assertEqual(station.geocoding_details["reason"], "multiple_same_brand_stations_in_city")
+
+    def test_matching_osm_store_ref_resolves_highway_but_wrong_ref_does_not(self):
+        station = self.station(name="Example Fuel #99", address="I-40 Exit 10")
+        enrich_stations(FuelStation.objects.filter(pk=station.pk), resolver([poi(name="Example Fuel", ref="98")]))
+        station.refresh_from_db()
+        self.assertEqual(station.geocoding_status, "review")
+        enrich_stations(FuelStation.objects.filter(pk=station.pk), resolver([poi(name="Example Fuel", ref="99")], "matching-ref"))
+        station.refresh_from_db()
+        self.assertEqual(station.geocoding_status, "resolved")
+        self.assertEqual(station.geocoding_details["osm_id"], "node/1")
+        self.assertEqual(station.geocoding_details["reason"], "unique_brand_store_number_city_state_match")
 
     def test_contested_same_brand_city_does_not_share_one_poi(self):
         first = self.station("1", name="Example Fuel #1", address="I-40 Exit 1")

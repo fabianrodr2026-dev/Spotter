@@ -16,7 +16,7 @@ from routes.models import FuelStation, StationGeocodeCache
 from .state_boundaries import CONTIGUOUS_STATES, StateBoundaries, valid_coordinate
 
 
-MATCHER_VERSION = "osm-address-name-v4"
+MATCHER_VERSION = "osm-address-name-v6"
 SOURCE = "OpenStreetMap / Overpass"
 ATTRIBUTION = "© OpenStreetMap contributors; ODbL 1.0; https://www.openstreetmap.org/copyright"
 ROAD_WORDS = {
@@ -107,7 +107,8 @@ class OsmStationResolver:
 
     def key(self, station: FuelStation) -> str:
         value = [MATCHER_VERSION, self.source_hash, self.boundary_hash, station.name,
-                 station.source_names, station.address, station.city, station.state]
+                 station.source_names, station.address, station.city, station.state,
+                 sorted(brand_city_state_keys(station) & self.contested_brands)]
         return hashlib.sha256(json.dumps(value, sort_keys=True).encode()).hexdigest()
 
     def resolve(self, station: FuelStation) -> dict:
@@ -162,7 +163,8 @@ class OsmStationResolver:
                 exact_address.append(evidence)
             if store_numbers:
                 brand_in_city.append(evidence)
-                if any(re.search(rf"#\s*{re.escape(number)}\b", raw_osm_names, re.I) for number in store_numbers):
+                if any(re.search(rf"#\s*{re.escape(number)}\b", raw_osm_names, re.I)
+                       or tags.get("ref", "").strip() == number for number in store_numbers):
                     brand_with_store.append(evidence)
         if len(exact_address) == 1:
             match = exact_address[0]
@@ -182,14 +184,6 @@ class OsmStationResolver:
             }
         station_brand_keys = brand_city_state_keys(station)
         contested_here = bool(station_brand_keys & self.contested_brands)
-        if len(brand_in_city) == 1 and not brand_with_store and station_brand_keys and not contested_here:
-            match = brand_in_city[0]
-            return {
-                **result, "status": "resolved", "reason": "unique_brand_store_number_city_state_match",
-                "latitude": str(match["latitude"]), "longitude": str(match["longitude"]),
-                "osm_id": match["osm_id"], "precision": match["precision"],
-                "verification_method": "automated_unique_brand_in_city_with_station_store_number",
-            }
         if len(brand_in_city) >= 1 and not brand_with_store and contested_here:
             return {**result, "status": "review", "reason": "multiple_same_brand_stations_in_city"}
         if ambiguous_address(station.address):
