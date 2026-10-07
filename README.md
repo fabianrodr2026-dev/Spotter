@@ -92,3 +92,7 @@ $env:SPOTTER_TEST_DB_PATH = "$PWD\geocoding-check.sqlite3"
 ```
 
 The second enrichment reuses all 6,141 decisions. With the enriched sample, expect on the order of eight usable stations and contested Amarillo multi-store brands left in review. To verify the production index, run `manage.py test routes.tests.test_geocoding.GeocodingTests.test_postgis_partial_spatial_index_exists_and_is_usable` against configured PostgreSQL/PostGIS with permission to create a test database. That test checks the actual index and query plan; it is explicitly skipped under SQLite.
+
+## Routing integration
+
+Section 5 provides the ORS adapter, cached route results, a shared planning deadline, and a maximum of three outbound attempts per routing session. The user supplied free-plan limits for the configured key: Directions V2 allows 2,000 requests per day and 40 per minute. See [routing configuration, provider evidence, limitations, and live checks](artifacts/ROUTING.md). The API and fuel-stop selection remain later steps. Account usage-term verification is still pending.
