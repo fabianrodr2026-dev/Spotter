@@ -1,4 +1,5 @@
 import json
+from unittest.mock import patch
 
 from django.test import SimpleTestCase, override_settings
 from django.urls import reverse
@@ -22,11 +23,19 @@ class ScaffoldTests(SimpleTestCase):
             errors = required_configuration(None)
         self.assertIn("routes.E003", [error.id for error in errors])
 
-    def test_valid_request_reports_planning_pending(self):
+    def test_valid_shape_reaches_planner_without_shape_error(self):
         payload = {"start": {"latitude": 40, "longitude": -75}, "finish": {"latitude": 41, "longitude": -74}}
-        response = self.client.post(reverse("plan-route"), data=json.dumps(payload), content_type="application/json")
-        self.assertEqual(response.status_code, 501)
-        self.assertEqual(response.json()["error"]["code"], "not_implemented")
+        with patch(
+            "routes.views.plan_route_payload",
+            return_value=({"plan_id": "scaffold", "map_url": "/map/scaffold/"}, 200),
+        ):
+            response = self.client.post(
+                reverse("plan-route"),
+                data=json.dumps(payload),
+                content_type="application/json",
+            )
+        self.assertEqual(response.status_code, 200)
+        self.assertEqual(response.json()["plan_id"], "scaffold")
 
     def test_invalid_coordinate_rejected(self):
         payload = {"start": {"latitude": "40", "longitude": -75}, "finish": {"latitude": 41, "longitude": -74}}

@@ -5,16 +5,30 @@
   <meta name="viewport" content="width=device-width, initial-scale=1">
   <title>Route map</title>
   {% load static %}
-  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css">
+  <link rel="stylesheet" href="https://unpkg.com/leaflet@1.9.4/dist/leaflet.css"
+        integrity="sha256-p4NxAoJBhIIN+hmNHrzRCf9tD/miZyoHS5obTRR9BMY="
+        crossorigin="">
   <link rel="stylesheet" href="{% static 'routes/map.css' %}">
 </head>
 <body>
   <main>
     <h1>Route map</h1>
-    <p>Route and fuel-stop overlays will appear after planning is implemented.</p>
-    <div id="map" aria-label="Interactive map of the contiguous United States"></div>
+    <p id="map-status" data-state="{{ map_state }}">{{ error_message }}</p>
+    <section id="summary" hidden>
+      <h2>Trip totals</h2>
+      <dl id="totals"></dl>
+      <p id="assumptions"></p>
+    </section>
+    <div id="map" aria-label="Interactive map of the planned route"></div>
+    <p id="tile-note">
+      Map tiles are requested by the browser from OpenStreetMap and are separate from
+      server-side routing provider calls.
+    </p>
   </main>
-  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"></script>
+  {{ plan|json_script:"plan-data" }}
+  <script src="https://unpkg.com/leaflet@1.9.4/dist/leaflet.js"
+          integrity="sha256-20nQCchB9co0qIjJZRGuk2/Z9VM+kNiyxNV1lvTlZBo="
+          crossorigin=""></script>
   <script src="{% static 'routes/map.js' %}"></script>
 </body>
 </html>

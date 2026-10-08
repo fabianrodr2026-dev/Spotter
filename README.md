@@ -1,6 +1,6 @@
 # Spotter route planner
 
-The Section 2 scaffold provides Django configuration, PostGIS setup, input-shape validation, a health endpoint, and a basic interactive map. It does **not** calculate routes or fuel purchases yet. `POST /api/routes/plan/` validates the coordinate request and returns HTTP 501 for a valid request until later implementation steps are complete. Section 3 provides the fuel-price audit and idempotent importer, verified against an isolated SQLite database. The supplied CSV remains unchanged; run the import command below to populate your configured database.
+Django API that plans a driving route between contiguous-US coordinates, selects economical fuel stops from the supplied price dataset, and returns a Leaflet map of the verified route. Vehicle model: 50 US gallon tank, 10 miles per US gallon (500-mile range). Django **6.1.2** is pinned in `requirements.txt`.
 
 ## Local setup (PowerShell)
 
@@ -26,15 +26,20 @@ Create the `spotter` database and user on your PostgreSQL server, grant that use
 
 If using the optional Compose service, run `docker compose up -d db` before the Django commands. Its `postgis/postgis:17-3.5` image uses a named volume and host port 55432 by default. The `routes` initial migration enables the `postgis` extension. For a clean database verification, use a new database, run `migrate`, and query `SELECT PostGIS_Version()`.
 
-Check `GET http://127.0.0.1:8000/health/` for `{"status":"ok"}`. `python manage.py check` reports `routes.E001`, `routes.E002`, or `routes.E003` with a setting name when a required secret, database password, or provider key is missing or left as the example placeholder. The health endpoint reports only that the Django process is responding; it does not claim the provider or database is ready. A basic Leaflet map is at `/map/`; browser tile requests use OpenStreetMap with visible attribution and are separate from routing calls. This development map uses [OSM's tile policy](https://operations.osmfoundation.org/policies/tiles/); use a dedicated provider for heavier deployment traffic.
+Check `GET http://127.0.0.1:8000/health/` for `{"status":"ok"}`. `python manage.py check` reports `routes.E001`, `routes.E002`, or `routes.E003` with a setting name when a required secret, database password, or provider key is missing or left as the example placeholder. The health endpoint reports only that the Django process is responding; it does not claim the provider or database is ready.
 
-An example accepted request shape is:
+After importing fuel prices and enriching usable station coordinates, plan a route (PowerShell):
 
-```json
-{"start":{"latitude":40.7128,"longitude":-74.0060},"finish":{"latitude":34.0522,"longitude":-118.2437},"initial_fuel_gallons":50}
+```powershell
+$body = @{
+  start = @{ latitude = 40.7128; longitude = -74.0060 }
+  finish = @{ latitude = 39.9526; longitude = -75.1652 }
+  initial_fuel_gallons = 50
+} | ConvertTo-Json
+Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/routes/plan/ -ContentType application/json -Body $body
 ```
 
-Only finite numeric coordinates and 0–50 gallons of initial fuel pass the scaffold's shape checks. Contiguous-US polygon validation, routing, station selection, fuel optimization, and finished map rendering are planned for later sections. See [CONTRACT.md](CONTRACT.md) for accounting and geographic assumptions. Map tiles, when added, and setup-time station geocoding are separate from per-request routing attempts.
+Open the returned `map_url` (for example `/map/<plan_id>/`). Refreshing that page reads the cached plan and does **not** call the routing provider again. Browser map tiles use OpenStreetMap with visible attribution and are separate from server-side routing calls ([OSM tile policy](https://operations.osmfoundation.org/policies/tiles/)). Use a dedicated tile provider for heavier traffic. See [CONTRACT.md](CONTRACT.md) for accounting and geographic assumptions.
 
 ## Fuel-price audit and import
 
@@ -95,7 +100,7 @@ The second enrichment reuses all 6,141 decisions. With the enriched sample, expe
 
 ## Routing integration
 
-Section 5 provides the ORS adapter, cached route results, a shared planning deadline, and a maximum of three outbound attempts per routing session. Public Standard-plan limits are Directions V2 2,000/day and 40/minute; driving routes are limited to 6,000 km and 50 waypoints. Attribution and CC-BY-SA 4.0 obligations are recorded in [routing configuration, provider evidence, limitations, and live checks](artifacts/ROUTING.md). Fuel optimization and the finished API remain later steps.
+Section 5 provides the ORS adapter, cached route results, a shared planning deadline, and a maximum of three outbound attempts per routing session. Public Standard-plan limits are Directions V2 2,000/day and 40/minute; driving routes are limited to 6,000 km and 50 waypoints. Attribution and CC-BY-SA 4.0 obligations are recorded in [routing configuration, provider evidence, limitations, and live checks](artifacts/ROUTING.md).
 
 ## Station corridor search
 
@@ -103,4 +108,44 @@ Section 6 projects usable stations onto the provider route inside `STATION_CORRI
 
 ## Fuel optimizer and verified stops
 
-Section 7 implements a pure greedy purchase optimizer (50-gallon tank, 10 mpg) for a fixed ordered station sequence, with decimal cost accounting, explicit tolerances, and estimate labeling until access is verified. Section 8 routes through selected purchase stops, snaps waypoints within `STATION_SNAP_TOLERANCE_MILES`, recalculates purchases from verified leg distances, and allows one bounded repair inside the three-attempt routing budget. See [fuel optimizer notes](artifacts/FUEL_OPTIMIZER.md). The HTTP API remains HTTP 501 until Section 9.
+Section 7 implements a pure greedy purchase optimizer (50-gallon tank, 10 mpg) for a fixed ordered station sequence, with decimal cost accounting, explicit tolerances, and estimate labeling until access is verified. Section 8 routes through selected purchase stops, snaps waypoints within `STATION_SNAP_TOLERANCE_MILES`, recalculates purchases from verified leg distances, and allows one bounded repair inside the three-attempt routing budget. See [fuel optimizer notes](artifacts/FUEL_OPTIMIZER.md).
+
+## API and map
+
+`POST /api/routes/plan/` accepts JSON with `start` / `finish` objects (`latitude`, `longitude`) and optional `initial_fuel_gallons` (default 50, range 0–50). Validation rejects non-finite numbers, out-of-range coordinates, non-contiguous-US endpoints (`unsupported_location`), and out-of-range fuel. Successful responses include route GeoJSON, miles, duration, ordered stops (prices, gallons, costs, escaped names for the map), fuel totals, assumptions, routing-attempt count, dataset version, `plan_id`, and `map_url`. Structured errors cover invalid input, unsupported location/route, no route, insufficient station coverage / infeasible fuel, inability to plan, and provider failures.
+
+Successful plans are cached under a material key (endpoints, initial fuel, vehicle assumptions, corridor/snap settings, dataset SHA-256, boundary hash, routing profile/options) for `PLAN_CACHE_TIMEOUT_SECONDS` (default 1800) and under `plan_id` for the map page. Failed plans never write a success map. Unknown or expired map IDs return HTTP 404 with an explanatory page. Station names and other dataset text are embedded with Django `json_script` escaping and rendered via DOM `textContent` on the map.
+
+Example request:
+
+```json
+{
+  "start": {"latitude": 40.7128, "longitude": -74.0060},
+  "finish": {"latitude": 34.0522, "longitude": -118.2437},
+  "initial_fuel_gallons": 50
+}
+```
+
+Demo: start the server after migrate/import/enrichment, POST the short NYC→Philadelphia example above, open `map_url`, confirm the route polyline, totals, OSM attribution, and that a browser refresh does not add routing attempts. With the current enriched sample (only a few usable stations), long cross-country live requests often return `insufficient_station_coverage` until a broader verified station set is available.
+
+## Performance and delivery
+
+Plan responses avoid re-reading the CSV; stations come from the database. Stage timings, candidate counts, cache hit/miss, and routing-attempt counts are logged on logger `routes.plan` without credentials. Re-run local mocked benchmarks:
+
+```powershell
+$env:SPOTTER_TEST_DB_PATH = "$PWD\benchmark-check.sqlite3"
+.\.venv\Scripts\python.exe manage.py migrate --settings=config.test_settings
+.\.venv\Scripts\python.exe manage.py benchmark_plans --settings=config.test_settings --samples 11
+```
+
+Measured results (mocked routing, LocMem cache, 11 samples) are recorded in [artifacts/PERFORMANCE.md](artifacts/PERFORMANCE.md). On this development machine, warm medians were about 3–4 ms and cold medians about 6–8 ms after the process-local boundary file was loaded; the first boundary load in a process is about 0.5 s. These figures exclude OpenRouteService latency.
+
+Algorithm assumptions: corridor-heuristic stop selection, greedy purchases on the final verified ordered stops, contiguous-US endpoints, `avoid_borders=all`, at most three routing attempts. Known limitations: sparse usable geocoding coverage in the bundled sample, process-local default cache, OSM tile use for light development only, and no claim of globally optimal station choice across the road network.
+
+### Final acceptance notes
+
+- Django 6.1.2 pinned; supplied CSV SHA-256 recorded by import; coordinate quality and coverage disclosed in geocoding artifacts.
+- USA polygon validation and unsupported/error paths are covered by `routes.tests.test_api`.
+- Multi-stop fuel plans, tank/fuel reconciliation, routing-attempt limits, and map-to-calculation correspondence are covered by planner/optimizer/API tests.
+- Full suite: `python manage.py test routes --settings=config.test_settings`.
+- Keep secrets in `.env` only; reproduce from this README and `.env.example`.

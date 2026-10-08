@@ -102,3 +102,20 @@ GEOCODING_OVERPASS_URL = os.getenv(
     "GEOCODING_OVERPASS_URL",
     "https://overpass.openstreetmap.fr/api/interpreter",
 )
+USA_BOUNDARY_PATH = os.getenv("USA_BOUNDARY_PATH", "artifacts/us-states-2024.geojson.gz")
+
+LOGGING = {
+    "version": 1,
+    "disable_existing_loggers": False,
+    "handlers": {
+        "console": {
+            "class": "logging.StreamHandler",
+        },
+    },
+    "loggers": {
+        "routes.plan": {
+            "handlers": ["console"],
+            "level": os.getenv("PLAN_LOG_LEVEL", "INFO"),
+        },
+    },
+}

@@ -280,12 +280,19 @@ class GeocodingTests(TestCase):
         self.assertEqual(StationGeocodeCache.objects.count(), 0)
 
     def test_route_requests_never_invoke_enrichment_or_network(self):
+        from routes.services.routing import RoutingError
+
         with patch("routes.services.geocoding.enrich_stations", side_effect=AssertionError("bulk geocoding")), \
-             patch("routes.services.location_sources.urlopen", side_effect=AssertionError("network")):
+             patch("routes.services.location_sources.urlopen", side_effect=AssertionError("network")), \
+             patch(
+                 "routes.services.plan_api.create_routing_session",
+                 side_effect=RoutingError("provider_unavailable"),
+             ):
             response = self.client.post(reverse("plan-route"), data=json.dumps({
                 "start": {"latitude": 40, "longitude": -75}, "finish": {"latitude": 41, "longitude": -74},
             }), content_type="application/json")
-        self.assertEqual(response.status_code, 501)
+        self.assertEqual(response.status_code, 503)
+        self.assertEqual(response.json()["error"]["code"], "provider_unavailable")
         self.assertEqual(StationGeocodeCache.objects.count(), 0)
 
     def test_postgis_partial_spatial_index_exists_and_is_usable(self):

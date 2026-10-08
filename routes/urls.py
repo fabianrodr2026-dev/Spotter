@@ -7,4 +7,5 @@ urlpatterns = [
     path("health/", views.health, name="health"),
     path("api/routes/plan/", views.plan_route, name="plan-route"),
     path("map/", views.map_page, name="map"),
+    path("map/<str:plan_id>/", views.map_page, name="map-plan"),
 ]
