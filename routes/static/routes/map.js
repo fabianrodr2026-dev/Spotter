@@ -7,10 +7,10 @@
   const state = statusEl ? statusEl.dataset.state : "missing";
 
   const map = L.map("map").setView([39.5, -98.35], 4);
-  L.tileLayer("https://tile.openstreetmap.org/{z}/{x}/{y}.png", {
-    maxZoom: 19,
+  L.tileLayer("https://{s}.tile.opentopomap.org/{z}/{x}/{y}.png", {
+    maxZoom: 17,
     attribution:
-      '&copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors',
+      'Map data: &copy; <a href="https://www.openstreetmap.org/copyright">OpenStreetMap</a> contributors | DEM: SRTM, Sonny | Map style: &copy; <a href="https://opentopomap.org/about">OpenTopoMap</a> (CC-BY-SA)',
   }).addTo(map);
 
   if (state !== "ready" || !planNode) {
@@ -42,17 +42,25 @@
   }
 
   const totals = plan.totals || {};
-  textItem("Distance (miles)", String(plan.route.distance_miles));
-  textItem("Duration (seconds)", String(plan.route.duration_seconds));
-  textItem("Initial fuel (gal)", String(totals.initial_fuel_gallons));
-  textItem("Consumed (gal)", String(totals.fuel_consumed_gallons));
-  textItem("Purchased (gal)", String(totals.fuel_purchased_gallons));
-  textItem("Remaining (gal)", String(totals.fuel_remaining_gallons));
+  function quantity(value, digits = 3) {
+    return Number(value).toLocaleString("en-US", { maximumFractionDigits: digits });
+  }
+  textItem("Distance (miles)", quantity(plan.route.distance_miles, 1));
+  textItem("Duration (hours)", quantity(plan.route.duration_seconds / 3600, 1));
+  textItem("Initial fuel (gal)", quantity(totals.initial_fuel_gallons));
+  textItem("Consumed (gal)", quantity(totals.fuel_consumed_gallons));
+  textItem("Purchased (gal)", quantity(totals.fuel_purchased_gallons));
+  textItem("Remaining (gal)", quantity(totals.fuel_remaining_gallons));
   textItem("Trip fuel cost (USD)", String(totals.total_fuel_cost_usd));
   textItem("Routing attempts", String(plan.routing_attempts));
 
   if (Array.isArray(plan.assumptions) && plan.assumptions.length) {
     assumptionsEl.textContent = plan.assumptions.join(" ");
+  }
+  if (plan.attribution && plan.attribution.routing) {
+    const attribution = document.createElement("p");
+    attribution.textContent = plan.attribution.routing;
+    summaryEl.appendChild(attribution);
   }
 
   const layer = L.geoJSON(plan.route.geometry, {
@@ -79,11 +87,11 @@
 
     const purchase = document.createElement("div");
     purchase.textContent =
-      String(stop.gallons_purchased) +
+      quantity(stop.gallons_purchased) +
       " gal @ $" +
-      String(stop.price_usd_per_gallon) +
+      quantity(stop.price_usd_per_gallon, 4) +
       "/gal = $" +
-      String(stop.cost_usd);
+      Number(stop.cost_usd).toFixed(2);
     root.appendChild(purchase);
     marker.bindPopup(root);
   });

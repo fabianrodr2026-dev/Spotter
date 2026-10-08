@@ -33,6 +33,17 @@ def line_route(coordinates, distance_miles=None, legs=None, indices=None):
 
 
 class StationSearchTests(TestCase):
+    def test_lookup_excludes_other_dataset_versions(self):
+        self.usable("same", price="3.50")
+        other = FuelPriceDataset.objects.create(
+            sha256="c" * 64, source_filename="other.csv", source_row_count=1,
+        )
+        self.usable("same", price="1.00", dataset=other)
+        route = line_route([[-75.1, 40.0], [-74.9, 40.0]], distance_miles=20)
+        candidates = CorridorStationLookup(dataset_sha=self.dataset.sha256).candidates(route, 5)
+        self.assertEqual(len(candidates), 1)
+        self.assertEqual(candidates[0].price_usd_per_gallon, Decimal("3.50"))
+
     def setUp(self):
         self.dataset = FuelPriceDataset.objects.create(
             sha256="b" * 64, source_filename="stations.csv", source_row_count=1,

@@ -29,29 +29,3 @@ def load_contiguous_boundaries() -> tuple[StateBoundaries, str]:
 def in_contiguous_usa(point: Coordinate, boundaries: StateBoundaries | None = None) -> bool:
     loaded = boundaries if boundaries is not None else load_contiguous_boundaries()[0]
     return bool(loaded.containing_states(point.longitude, point.latitude))
-
-
-def geometry_stays_in_contiguous_usa(
-    geometry: dict,
-    *,
-    boundaries: StateBoundaries | None = None,
-    sample_stride: int = 25,
-) -> bool:
-    if not isinstance(geometry, dict) or geometry.get("type") != "LineString":
-        return False
-    coordinates = geometry.get("coordinates")
-    if not isinstance(coordinates, list) or len(coordinates) < 2:
-        return False
-    loaded = boundaries if boundaries is not None else load_contiguous_boundaries()[0]
-    stride = max(1, sample_stride)
-    indices = list(range(0, len(coordinates), stride))
-    if indices[-1] != len(coordinates) - 1:
-        indices.append(len(coordinates) - 1)
-    for index in indices:
-        point = coordinates[index]
-        if not isinstance(point, (list, tuple)) or len(point) < 2:
-            return False
-        lon, lat = float(point[0]), float(point[1])
-        if not loaded.containing_states(lon, lat):
-            return False
-    return True

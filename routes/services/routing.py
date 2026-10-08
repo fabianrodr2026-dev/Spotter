@@ -11,6 +11,8 @@ from typing import Callable, Protocol
 
 from routes.validation import Coordinate
 
+PROVIDER_ATTRIBUTION = "© openrouteservice by HeiGIT | Data from OpenStreetMap"
+
 
 @dataclass(frozen=True)
 class DrivingRoute:
@@ -20,7 +22,7 @@ class DrivingRoute:
     leg_distances_miles: tuple[float, ...]
     waypoint_indices: tuple[int, ...] = ()
     provider_version: str = ""
-    attribution: str = "© openrouteservice by HeiGIT | Data from OpenStreetMap"
+    attribution: str = PROVIDER_ATTRIBUTION
 
 
 class RoutingProvider(Protocol):
@@ -138,7 +140,7 @@ def _parse_route(payload: dict, waypoint_count: int) -> DrivingRoute:
             copy.deepcopy(geometry), distance / 1609.344, duration,
             tuple(leg / 1609.344 for leg in legs), indices,
             str(metadata.get("engine", {}).get("version", "unknown")),
-            str(metadata.get("attribution", "© openrouteservice by HeiGIT | Data from OpenStreetMap")),
+            PROVIDER_ATTRIBUTION,
         )
     except (KeyError, IndexError, TypeError, ValueError, AttributeError):
         raise RoutingError("invalid_response") from None
@@ -156,7 +158,7 @@ class OpenRouteService:
             raise ValueError("ROUTING_PROVIDER_API_KEY is required")
         if profile not in ("driving-car", "driving-hgv"):
             raise ValueError("Unsupported driving profile")
-        self.options = copy.deepcopy(options if options is not None else {"avoid_borders": "all"})
+        self.options = copy.deepcopy(options if options is not None else {})
         # Other ORS options have different distance limits; do not silently accept them.
         if set(self.options) - {"avoid_borders"}:
             raise ValueError("Unsupported routing options")

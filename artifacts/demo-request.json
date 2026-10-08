@@ -1,0 +1,11 @@
+{
+  "start": {
+    "latitude": 40.7128,
+    "longitude": -74.006
+  },
+  "finish": {
+    "latitude": 25.7617,
+    "longitude": -80.1918
+  },
+  "initial_fuel_gallons": 50
+}

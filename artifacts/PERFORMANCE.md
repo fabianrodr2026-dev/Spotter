@@ -1,87 +1,90 @@
-# Performance measurements (Section 10)
+# Performance measurements
 
-Environment: development machine, mocked routing transport, LocMem plan cache
-Samples per cell: 11
+Real database corridor queries, full recorded road geometry, projection, optimization, serialization and caching are measured. Only provider HTTP is replayed for repeated local samples. Live timings are one observation per scenario, not latency guarantees.
 
-Provisional goals (development machine, local processing): under 1000 ms cold local planning; under 300 ms warm cached responses. External provider latency is excluded from these mocked runs and is not guaranteed.
+Cold clears route and plan caches; boundary loading occurs once per process. Failed plans are not cached, so warm success latency is unavailable for failures. Targets: local planning below 1,000 ms; cached responses below 300 ms.
 
-The short-scenario cold p95 includes a one-time contiguous-US boundary file load (~0.5 s) on the first request in the process. After that load, cold medians for all scenarios stay under 10 ms and warm medians under 5 ms on this machine.
-
-| Scenario | Miles | Stops | Cold median (ms) | Cold p95 (ms) | Warm median (ms) | Warm p95 (ms) |
-| --- | ---: | ---: | ---: | ---: | ---: | ---: |
-| short | 90.0 | 0 | 6.18 | 545.919 | 3.067 | 5.107 |
-| regional | 230.0 | 2 | 8.388 | 8.996 | 4.263 | 4.588 |
-| cross_country | 2400.0 | 5 | 6.879 | 7.785 | 2.569 | 3.101 |
-
-Cache keys include endpoints, initial fuel, vehicle assumptions, corridor and snap settings, dataset SHA-256, boundary hash, and routing profile/options/adapter version.
-
-Raw JSON:
+The cross-country outcome is reported honestly; incomplete station coverage must never be replaced by invented stops.
 
 ```json
 {
-  "environment": "development machine, mocked routing transport, LocMem plan cache",
-  "samples_per_cell": 11,
-  "goals": {
-    "local_planning_ms": 1000,
-    "cached_response_ms": 300
+  "environment": {
+    "python": "3.12.8",
+    "platform": "Windows-11-10.0.26200-SP0",
+    "database": "postgresql",
+    "cache": "django.core.cache.backends.locmem.LocMemCache"
   },
+  "dataset_sha256": "c704371f141ded9c54df6c32d488a0ba2ceb589f88c936c967daa5330e0cd241",
+  "stations": 6141,
+  "usable_stations": 149,
   "scenarios": {
     "short": {
-      "distance_miles": 90.0,
+      "outcome": "success",
+      "cold_local": {
+        "samples": 11,
+        "median_ms": 53.041,
+        "p95_ms": 650.816
+      },
+      "warm_cached": {
+        "samples": 11,
+        "median_ms": 9.053,
+        "p95_ms": 13.31
+      },
+      "distance_miles": 96.01377952755907,
       "stop_count": 0,
-      "cold_local_ms": {
-        "sample_size": 11,
-        "median_ms": 6.18,
-        "p95_ms": 545.919,
-        "min_ms": 4.77,
-        "max_ms": 545.919
-      },
-      "warm_cache_ms": {
-        "sample_size": 11,
-        "median_ms": 3.067,
-        "p95_ms": 5.107,
-        "min_ms": 2.487,
-        "max_ms": 5.107
-      },
-      "notes": "Local processing only; provider latency excluded by mocked transport."
+      "candidate_count": 3,
+      "live_total_ms": 2149.753,
+      "live_provider_ms": 1595.734
     },
     "regional": {
-      "distance_miles": 230.0,
+      "outcome": "success",
+      "cold_local": {
+        "samples": 11,
+        "median_ms": 149.179,
+        "p95_ms": 228.752
+      },
+      "warm_cached": {
+        "samples": 11,
+        "median_ms": 12.585,
+        "p95_ms": 25.497
+      },
+      "distance_miles": 388.5510493716695,
+      "stop_count": 0,
+      "candidate_count": 4,
+      "live_total_ms": 2405.072,
+      "live_provider_ms": 2299.781
+    },
+    "long_multi_stop": {
+      "outcome": "success",
+      "cold_local": {
+        "samples": 11,
+        "median_ms": 455.471,
+        "p95_ms": 562.463
+      },
+      "warm_cached": {
+        "samples": 11,
+        "median_ms": 13.541,
+        "p95_ms": 19.406
+      },
+      "distance_miles": 1303.1982596635646,
       "stop_count": 2,
-      "cold_local_ms": {
-        "sample_size": 11,
-        "median_ms": 8.388,
-        "p95_ms": 8.996,
-        "min_ms": 7.761,
-        "max_ms": 8.996
-      },
-      "warm_cache_ms": {
-        "sample_size": 11,
-        "median_ms": 4.263,
-        "p95_ms": 4.588,
-        "min_ms": 3.661,
-        "max_ms": 4.588
-      },
-      "notes": "Local processing only; provider latency excluded by mocked transport."
+      "candidate_count": 7,
+      "live_total_ms": 7229.719,
+      "live_provider_ms": 6652.2
     },
     "cross_country": {
-      "distance_miles": 2400.0,
-      "stop_count": 5,
-      "cold_local_ms": {
-        "sample_size": 11,
-        "median_ms": 6.879,
-        "p95_ms": 7.785,
-        "min_ms": 5.712,
-        "max_ms": 7.785
+      "outcome": "infeasible_fuel",
+      "cold_local": {
+        "samples": 11,
+        "median_ms": 687.176,
+        "p95_ms": 850.895
       },
-      "warm_cache_ms": {
-        "sample_size": 11,
-        "median_ms": 2.569,
-        "p95_ms": 3.101,
-        "min_ms": 2.421,
-        "max_ms": 3.101
-      },
-      "notes": "Local processing only; provider latency excluded by mocked transport."
+      "warm_cached": null,
+      "distance_miles": null,
+      "stop_count": 0,
+      "candidate_count": null,
+      "live_total_ms": 7594.4,
+      "live_provider_ms": 6849.923
     }
   }
 }

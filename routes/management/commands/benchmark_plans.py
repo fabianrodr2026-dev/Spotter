@@ -1,281 +1,151 @@
 from __future__ import annotations
 
+import gzip
 import json
+import math
+import platform
 import statistics
 import time
-from decimal import Decimal
-from typing import Callable
+from pathlib import Path
 
+from django.conf import settings
 from django.core.cache import cache
-from django.core.management.base import BaseCommand
-from django.utils import timezone
+from django.core.management.base import BaseCommand, CommandError
+from django.db import connection
 
-from routes.models import FuelPriceDataset, FuelStation
-from routes.services.plan_api import plan_route_payload
+from routes.models import FuelPriceDataset
+from routes.services.plan_api import PlanRequestError, plan_route_payload
 from routes.services.planner import RoutePlanner
-from routes.services.routing import DrivingRoute, OpenRouteService, RoutingBudget, RoutingSession
-from routes.services.station_search import CandidateStation
-from routes.services.usa import load_contiguous_boundaries
-from routes.validation import Coordinate
+from routes.services.routing import OpenRouteService, RoutingBudget, RoutingSession, post_once
+from routes.services.station_search import CorridorStationLookup, usable_stations
 
 
 SCENARIOS = {
-    "short": {
-        "start": {"latitude": 40.7128, "longitude": -74.0060},
-        "finish": {"latitude": 39.9526, "longitude": -75.1652},
-        "miles": 90.0,
-        "stops": (),
-    },
-    "regional": {
-        "start": {"latitude": 40.7128, "longitude": -74.0060},
-        "finish": {"latitude": 38.9072, "longitude": -77.0369},
-        "miles": 230.0,
-        "stops": (
-            ("R1", 40.2, -75.5, "3.40", 100.0),
-            ("R2", 39.5, -76.5, "3.20", 180.0),
-        ),
-    },
-    "cross_country": {
-        "start": {"latitude": 40.7128, "longitude": -74.0060},
-        "finish": {"latitude": 34.0522, "longitude": -118.2437},
-        "miles": 2400.0,
-        "stops": (
-            ("C1", 40.0, -80.0, "3.50", 400.0),
-            ("C2", 39.0, -90.0, "3.30", 800.0),
-            ("C3", 38.0, -100.0, "3.10", 1200.0),
-            ("C4", 36.0, -110.0, "3.40", 1600.0),
-            ("C5", 35.0, -115.0, "3.20", 2000.0),
-        ),
-    },
+    "short": (40.7128, -74.0060, 39.9526, -75.1652),
+    "regional": (40.7128, -74.0060, 40.4406, -79.9959),
+    "long_multi_stop": (40.7128, -74.0060, 25.7617, -80.1918),
+    "cross_country": (40.7128, -74.0060, 34.0522, -118.2437),
 }
 
 
-def _route(waypoints: tuple[Coordinate, ...], leg_miles: tuple[float, ...]) -> DrivingRoute:
-    return DrivingRoute(
-        geometry={
-            "type": "LineString",
-            "coordinates": [[point.longitude, point.latitude] for point in waypoints],
-        },
-        distance_miles=sum(leg_miles),
-        duration_seconds=100.0 * len(leg_miles),
-        leg_distances_miles=leg_miles,
-        waypoint_indices=tuple(range(len(waypoints))),
-        provider_version="benchmark",
-    )
+def request_for(points):
+    lat1, lon1, lat2, lon2 = points
+    return {"start": {"latitude": lat1, "longitude": lon1},
+            "finish": {"latitude": lat2, "longitude": lon2}, "initial_fuel_gallons": 50}
 
 
-def _candidate(source_id: str, lat: float, lon: float, price: str, route_miles: float) -> CandidateStation:
-    return CandidateStation(
-        source_id=source_id,
-        latitude=lat,
-        longitude=lon,
-        price_usd_per_gallon=Decimal(price),
-        route_distance_miles=route_miles,
-        offset_miles=0.1,
-        estimated_detour_miles=0.2,
-        geocoding_confidence=Decimal("1.0"),
-        geocoding_source="benchmark",
-        location_quality="resolved_verified",
-    )
+def timing_summary(values):
+    ordered = sorted(values)
+    return {"samples": len(values), "median_ms": round(statistics.median(values), 3),
+            "p95_ms": round(ordered[math.ceil(.95 * len(ordered)) - 1], 3)}
 
 
 class Command(BaseCommand):
-    help = "Benchmark local planning latency with mocked routing (cold and warm caches)."
+    help = "Benchmark real database lookup and planning using recorded provider responses; optionally capture live responses."
 
     def add_arguments(self, parser):
-        parser.add_argument("--samples", type=int, default=21)
-        parser.add_argument("--output", type=str, default="artifacts/PERFORMANCE.md")
+        parser.add_argument("--samples", type=int, default=11)
+        parser.add_argument("--capture-live", action="store_true")
+        parser.add_argument("--replay-file", type=Path, default=Path("artifacts/routing-benchmark.json.gz"))
+        parser.add_argument("--output", type=Path, default=Path("artifacts/PERFORMANCE.md"))
 
     def handle(self, *args, **options):
-        samples = max(3, int(options["samples"]))
-        load_contiguous_boundaries.cache_clear()
-        cache.clear()
-        dataset, _ = FuelPriceDataset.objects.get_or_create(
-            sha256="b" * 64,
-            defaults={"source_filename": "benchmark.csv", "source_row_count": 1},
-        )
-        FuelStation.objects.get_or_create(
-            dataset=dataset,
-            source_station_id="BENCH",
-            defaults={
-                "name": "Benchmark Station",
-                "address": "1 Bench",
-                "city": "Town",
-                "state": "NY",
-                "rack_id": "1",
-                "price_usd_per_gallon": Decimal("3.00"),
-                "price_source_text": "3.00",
-                "source_row_numbers": [1],
-                "source_names": ["Benchmark Station"],
-                "latitude": Decimal("40.5"),
-                "longitude": Decimal("-74.5"),
-                "geocoding_status": "resolved",
-                "geocoding_source": "benchmark",
-                "geocoding_key": "bench",
-                "location_verified_at": timezone.now(),
-            },
-        )
+        if options["samples"] < 3:
+            raise CommandError("Use at least three samples")
+        dataset = FuelPriceDataset.objects.order_by("-imported_at").first()
+        if dataset is None:
+            raise CommandError("Import and enrich the supplied dataset first")
+        lookup = CorridorStationLookup(dataset_sha=dataset.pk)
+        recording = {"dataset_sha256": dataset.pk,
+                     "attribution": "© openrouteservice by HeiGIT | Data from OpenStreetMap; CC-BY-SA 4.0",
+                     "scenarios": {}}
 
-        report = {
-            "environment": "development machine, mocked routing transport, LocMem plan cache",
-            "samples_per_cell": samples,
-            "goals": {
-                "local_planning_ms": 1000,
-                "cached_response_ms": 300,
-            },
-            "scenarios": {},
-        }
+        def run(request, transport):
+            def factory():
+                def session(a, b):
+                    return RoutingSession(OpenRouteService(
+                        api_key=settings.ROUTING_PROVIDER_API_KEY, cache=cache,
+                        budget=RoutingBudget(settings.ROUTING_TOTAL_DEADLINE_SECONDS),
+                        transport=transport,
+                    ), a, b)
+                return RoutePlanner(session, lookup)
+            try:
+                payload, _ = plan_route_payload(json.dumps(request).encode(), planner_factory=factory)
+                return {"outcome": "success", "payload": payload}
+            except PlanRequestError as exc:
+                return {"outcome": exc.code}
 
-        for name, scenario in SCENARIOS.items():
-            start = Coordinate(scenario["start"]["latitude"], scenario["start"]["longitude"])
-            finish = Coordinate(scenario["finish"]["latitude"], scenario["finish"]["longitude"])
-            stops = tuple(_candidate(*item) for item in scenario["stops"])
-            if stops:
-                waypoints = (start, *(Coordinate(s.latitude, s.longitude) for s in stops), finish)
-                spacing = scenario["miles"] / (len(stops) + 1)
-                legs = tuple(spacing for _ in range(len(stops) + 1))
-                initial = _route((start, finish), (scenario["miles"],))
-                verified = _route(waypoints, legs)
-            else:
-                initial = verified = _route((start, finish), (scenario["miles"],))
-
-            routes = {
-                ((start.latitude, start.longitude), (finish.latitude, finish.longitude)): initial,
-            }
-            if stops:
-                key = (
-                    (start.latitude, start.longitude),
-                    *((s.latitude, s.longitude) for s in stops),
-                    (finish.latitude, finish.longitude),
-                )
-                routes[key] = verified
-
-            transport_calls = {"count": 0}
-
-            def transport(request, deadline, _routes=routes, _calls=transport_calls):
-                _calls["count"] += 1
-                coords = tuple((latlon[1], latlon[0]) for latlon in request["body"]["coordinates"])
-                route = _routes[coords]
-                body = {
-                    "type": "FeatureCollection",
-                    "features": [{
-                        "geometry": route.geometry,
-                        "properties": {
-                            "summary": {
-                                "distance": route.distance_miles * 1609.344,
-                                "duration": route.duration_seconds,
-                            },
-                            "segments": [
-                                {"distance": leg * 1609.344} for leg in route.leg_distances_miles
-                            ],
-                            "way_points": list(route.waypoint_indices),
-                        },
-                    }],
-                    "metadata": {"engine": {"version": route.provider_version}},
+        if options["capture_live"]:
+            for name, coordinates in SCENARIOS.items():
+                cache.clear()
+                request = request_for(coordinates)
+                records = []
+                def transport(provider_request, deadline):
+                    started = time.perf_counter()
+                    response = post_once(provider_request, deadline)
+                    records.append({"coordinates": provider_request["body"]["coordinates"],
+                                    "response": response,
+                                    "provider_ms": (time.perf_counter() - started) * 1000})
+                    return response
+                started = time.perf_counter()
+                result = run(request, transport)
+                recording["scenarios"][name] = {
+                    "request": request, "records": records, "outcome": result["outcome"],
+                    "live_total_ms": (time.perf_counter() - started) * 1000,
                 }
-                return {"status": 200, "body": json.dumps(body)}
+                self.stdout.write(f"{name}: live {result['outcome']}, {len(records)} routing attempts")
+                if name == "long_multi_stop" and result["outcome"] == "success":
+                    Path("artifacts/demo-plan.json").write_text(json.dumps(result["payload"], indent=2), encoding="utf-8")
+                    Path("artifacts/demo-request.json").write_text(json.dumps(request, indent=2), encoding="utf-8")
+            options["replay_file"].parent.mkdir(parents=True, exist_ok=True)
+            with gzip.open(options["replay_file"], "wt", encoding="utf-8") as stream:
+                json.dump(recording, stream)
+        else:
+            try:
+                with gzip.open(options["replay_file"], "rt", encoding="utf-8") as stream:
+                    recording = json.load(stream)
+            except OSError as exc:
+                raise CommandError("Capture responses with --capture-live first") from exc
+        if recording["dataset_sha256"] != dataset.pk:
+            raise CommandError("Replay dataset does not match the imported dataset")
 
-            class Lookup:
-                def candidates(self, route, corridor_miles):
-                    return stops
-
-            def session_factory(a: Coordinate, b: Coordinate) -> RoutingSession:
-                provider = OpenRouteService(
-                    api_key="benchmark-key",
-                    cache=cache,
-                    budget=RoutingBudget(30),
-                    transport=transport,
-                )
-                return RoutingSession(provider, a, b)
-
-            def planner_factory() -> RoutePlanner:
-                return RoutePlanner(session_factory, Lookup(), corridor_miles=5, snap_tolerance_miles=0.5)
-
-            body = {
-                "start": scenario["start"],
-                "finish": scenario["finish"],
-                "initial_fuel_gallons": 50,
-            }
-            encoded = json.dumps(body).encode("utf-8")
-
-            cold = self._measure(
-                samples,
-                lambda: (
-                    cache.clear(),
-                    plan_route_payload(encoded, planner_factory=planner_factory),
-                )[1],
-            )
-            plan_route_payload(encoded, planner_factory=planner_factory)
-            warm = self._measure(
-                samples,
-                lambda: plan_route_payload(encoded, planner_factory=planner_factory),
-            )
-            report["scenarios"][name] = {
-                "distance_miles": scenario["miles"],
-                "stop_count": len(stops),
-                "cold_local_ms": cold,
-                "warm_cache_ms": warm,
-                "notes": "Local processing only; provider latency excluded by mocked transport.",
-            }
-            self.stdout.write(
-                f"{name}: cold median={cold['median_ms']} ms p95={cold['p95_ms']} ms; "
-                f"warm median={warm['median_ms']} ms p95={warm['p95_ms']} ms"
-            )
-
-        self._write_markdown(options["output"], report)
-
-    def _measure(self, samples: int, fn: Callable):
-        timings = []
-        for _ in range(samples):
-            started = time.perf_counter()
-            fn()
-            timings.append((time.perf_counter() - started) * 1000)
-        timings.sort()
-        p95_index = min(len(timings) - 1, max(0, int(round(0.95 * (len(timings) - 1)))))
-        return {
-            "sample_size": samples,
-            "median_ms": round(statistics.median(timings), 3),
-            "p95_ms": round(timings[p95_index], 3),
-            "min_ms": round(timings[0], 3),
-            "max_ms": round(timings[-1], 3),
-        }
-
-    def _write_markdown(self, path: str, report: dict) -> None:
-        lines = [
-            "# Performance measurements (Section 10)",
-            "",
-            f"Environment: {report['environment']}",
-            f"Samples per cell: {report['samples_per_cell']}",
-            "",
-            "Provisional goals (development machine, local processing): under 1000 ms cold local planning; "
-            "under 300 ms warm cached responses. External provider latency is excluded from these mocked runs "
-            "and is not guaranteed.",
-            "",
-            "| Scenario | Miles | Stops | Cold median (ms) | Cold p95 (ms) | Warm median (ms) | Warm p95 (ms) |",
-            "| --- | ---: | ---: | ---: | ---: | ---: | ---: |",
-        ]
-        for name, row in report["scenarios"].items():
-            cold = row["cold_local_ms"]
-            warm = row["warm_cache_ms"]
-            lines.append(
-                f"| {name} | {row['distance_miles']} | {row['stop_count']} | "
-                f"{cold['median_ms']} | {cold['p95_ms']} | {warm['median_ms']} | {warm['p95_ms']} |"
-            )
-        lines.extend([
-            "",
-            "Cache keys include endpoints, initial fuel, vehicle assumptions, corridor and snap settings, "
-            "dataset SHA-256, boundary hash, and routing profile/options/adapter version.",
-            "",
-            "Raw JSON:",
-            "",
-            "```json",
-            json.dumps(report, indent=2),
-            "```",
-            "",
-        ])
-        from pathlib import Path
-
-        target = Path(path)
-        target.parent.mkdir(parents=True, exist_ok=True)
-        target.write_text("\n".join(lines), encoding="utf-8")
-        self.stdout.write(self.style.SUCCESS(f"Wrote {target}"))
+        report = {"environment": {"python": platform.python_version(), "platform": platform.platform(),
+                                  "database": connection.vendor, "cache": settings.CACHES["default"]["BACKEND"]},
+                  "dataset_sha256": dataset.pk, "stations": dataset.stations.count(),
+                  "usable_stations": usable_stations(dataset.stations.all()).count(), "scenarios": {}}
+        for name, scenario in recording["scenarios"].items():
+            def replay(provider_request, deadline):
+                for record in scenario["records"]:
+                    if record["coordinates"] == provider_request["body"]["coordinates"]:
+                        return record["response"]
+                raise CommandError(f"{name}: missing response for selected waypoints; recapture after station changes")
+            cold, warm = [], []
+            result = None
+            for _ in range(options["samples"]):
+                cache.clear()
+                started = time.perf_counter()
+                result = run(scenario["request"], replay)
+                cold.append((time.perf_counter() - started) * 1000)
+                if result["outcome"] != scenario["outcome"]:
+                    raise CommandError(f"{name}: recorded outcome changed")
+                if result["outcome"] == "success":
+                    started = time.perf_counter()
+                    cached = run(scenario["request"], replay)
+                    warm.append((time.perf_counter() - started) * 1000)
+                    if cached["payload"]["routing_attempts"] != 0:
+                        raise CommandError("Warm plan unexpectedly performed routing")
+            payload = result.get("payload", {})
+            row = {"outcome": result["outcome"], "cold_local": timing_summary(cold),
+                   "warm_cached": timing_summary(warm) if warm else None,
+                   "distance_miles": payload.get("route", {}).get("distance_miles"),
+                   "stop_count": len(payload.get("stops", [])),
+                   "candidate_count": payload.get("diagnostics", {}).get("candidate_count"),
+                   "live_total_ms": round(scenario["live_total_ms"], 3),
+                   "live_provider_ms": round(sum(r["provider_ms"] for r in scenario["records"]), 3)}
+            report["scenarios"][name] = row
+            self.stdout.write(f"{name}: {row['outcome']}, cold {row['cold_local']}, warm {row['warm_cached']}")
+        lines = ["# Performance measurements", "",
+                 "Real database corridor queries, full recorded road geometry, projection, optimization, serialization and caching are measured. Only provider HTTP is replayed for repeated local samples. Live timings are one observation per scenario, not latency guarantees.", "",
+                 "Cold clears route and plan caches; boundary loading occurs once per process. Failed plans are not cached, so warm success latency is unavailable for failures. Targets: local planning below 1,000 ms; cached responses below 300 ms.", "",
+                 "The cross-country outcome is reported honestly; incomplete station coverage must never be replaced by invented stops.", "", "```json", json.dumps(report, indent=2), "```", ""]
+        options["output"].write_text("\n".join(lines), encoding="utf-8")

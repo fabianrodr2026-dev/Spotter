@@ -240,5 +240,13 @@ def find_candidate_stations(
 
 
 class CorridorStationLookup:
+    def __init__(self, *, dataset_sha: str | None = None) -> None:
+        self.dataset_sha = dataset_sha
+
     def candidates(self, route: DrivingRoute, corridor_miles: float) -> tuple[CandidateStation, ...]:
-        return find_candidate_stations(route, corridor_miles)
+        from routes.models import FuelStation
+
+        stations = None
+        if self.dataset_sha is not None:
+            stations = FuelStation.objects.filter(dataset_id=self.dataset_sha)
+        return find_candidate_stations(route, corridor_miles, stations=stations)

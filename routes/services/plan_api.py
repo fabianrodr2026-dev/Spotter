@@ -6,6 +6,7 @@ from decimal import Decimal, ROUND_HALF_UP
 from typing import Any, Callable
 
 from django.conf import settings
+from django.db.models import Count, Max
 from django.urls import reverse
 
 from routes.models import FuelPriceDataset, FuelStation
@@ -17,10 +18,9 @@ from routes.services.plan_store import (
     store_successful_plan,
 )
 from routes.services.routing import RoutingError, create_routing_session
-from routes.services.station_search import CorridorStationLookup
+from routes.services.station_search import CorridorStationLookup, usable_stations
 from routes.services.usa import (
     BOUNDARY_SOURCE,
-    geometry_stays_in_contiguous_usa,
     in_contiguous_usa,
     load_contiguous_boundaries,
 )
@@ -79,6 +79,9 @@ def _latest_dataset_sha() -> str:
 
 
 def build_material(request: PlanInput, dataset_sha: str, boundary_hash: str) -> dict[str, Any]:
+    coverage = usable_stations(FuelStation.objects.filter(dataset_id=dataset_sha)).aggregate(
+        count=Count("pk"), latest_verified_at=Max("location_verified_at"),
+    )
     return {
         "start": {
             "latitude": request.start.latitude,
@@ -94,17 +97,22 @@ def build_material(request: PlanInput, dataset_sha: str, boundary_hash: str) -> 
         "station_corridor_miles": float(settings.STATION_CORRIDOR_MILES),
         "station_snap_tolerance_miles": float(settings.STATION_SNAP_TOLERANCE_MILES),
         "dataset_sha256": dataset_sha,
+        "station_coverage_revision": {
+            "count": coverage["count"],
+            "latest_verified_at": coverage["latest_verified_at"].isoformat()
+            if coverage["latest_verified_at"] else None,
+        },
         "boundary_hash": boundary_hash,
         "routing_profile": "driving-car",
-        "routing_options": {"avoid_borders": "all"},
+        "routing_options": {},
         "routing_adapter_version": "v2-adapter-1",
     }
 
 
-def _station_details(source_ids: list[str]) -> dict[str, dict[str, str]]:
+def _station_details(source_ids: list[str], dataset_sha: str) -> dict[str, dict[str, str]]:
     if not source_ids:
         return {}
-    rows = FuelStation.objects.filter(source_station_id__in=source_ids).only(
+    rows = FuelStation.objects.filter(dataset_id=dataset_sha, source_station_id__in=source_ids).only(
         "source_station_id", "name", "city", "state",
     )
     return {
@@ -127,7 +135,7 @@ def serialize_planned_route(
     cache_status: str,
     candidate_count: int,
 ) -> dict[str, Any]:
-    details = _station_details([stop.source_id for stop in planned.selected_stops])
+    details = _station_details([stop.source_id for stop in planned.selected_stops], dataset_sha)
     stops = []
     for stop in planned.selected_stops:
         meta = details.get(stop.source_id, {"name": "", "city": "", "state": ""})
@@ -184,7 +192,7 @@ def serialize_planned_route(
         },
         "attribution": {
             "routing": planned.route.attribution,
-            "map_tiles": "© OpenStreetMap contributors",
+            "map_tiles": "Map data: © OpenStreetMap contributors | DEM: SRTM, Sonny | Map style: © OpenTopoMap (CC-BY-SA)",
         },
     }
 
@@ -218,14 +226,6 @@ def validate_request_geography(request: PlanInput) -> tuple[object, str]:
     return boundaries, boundary_hash
 
 
-def ensure_route_in_usa(planned: PlannedRoute, boundaries) -> None:
-    if not geometry_stays_in_contiguous_usa(planned.route.geometry, boundaries=boundaries):
-        raise PlanRequestError(
-            "unsupported_route",
-            "Provider route leaves the contiguous United States",
-        )
-
-
 def plan_route_payload(
     body: bytes,
     *,
@@ -245,7 +245,7 @@ def plan_route_payload(
     mark("parse_ms", parse_started)
 
     geo_started = time.perf_counter()
-    boundaries, boundary_hash = validate_request_geography(request)
+    _, boundary_hash = validate_request_geography(request)
     mark("geography_ms", geo_started)
 
     dataset_started = time.perf_counter()
@@ -258,17 +258,18 @@ def plan_route_payload(
         logger.info(
             "plan cache_hit stages=%s routing_attempts=%s candidate_count=%s total_ms=%.3f",
             stages,
-            cached.get("routing_attempts"),
+            0,
             cached.get("diagnostics", {}).get("candidate_count"),
             (time.perf_counter() - started) * 1000,
         )
         payload = dict(cached)
         payload["cache_status"] = "hit"
+        payload["routing_attempts"] = 0
         return payload, 200
 
     plan_started = time.perf_counter()
     if planner_factory is None:
-        base_lookup = CorridorStationLookup()
+        base_lookup = CorridorStationLookup(dataset_sha=dataset_sha)
     else:
         planner = planner_factory()
         base_lookup = planner.station_lookup
@@ -296,7 +297,6 @@ def plan_route_payload(
 
     try:
         planned = planner.plan(request)
-        ensure_route_in_usa(planned, boundaries)
     except (PlanError, RoutingError, PlanRequestError) as exc:
         mapped = _map_plan_error(exc)
         logger.info(

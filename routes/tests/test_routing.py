@@ -36,7 +36,8 @@ def response(waypoints=2):
                 "way_points": list(range(waypoints)),
             },
         }],
-        "metadata": {"engine": {"version": "9.10.0"}},
+        "metadata": {"engine": {"version": "9.10.0"},
+                     "attribution": "openrouteservice.org | OpenStreetMap contributors"},
     }
 
 
@@ -65,10 +66,12 @@ class RoutingTests(TestCase):
         self.assertEqual(result.duration_seconds, 120)
         self.assertEqual(result.waypoint_indices, (0, 1))
         self.assertEqual(result.provider_version, "9.10.0")
+        self.assertIn("HeiGIT", result.attribution)
         self.assertEqual(result.geometry, response()["features"][0]["geometry"])
         request, deadline = self.transport.call_args.args
         self.assertFalse(request["body"]["geometry_simplify"])
         self.assertTrue(request["body"]["instructions"])
+        self.assertEqual(request["body"]["options"], {})
         self.assertEqual(request["body"]["coordinates"][0], [-73.9857, 40.7484])
         self.assertEqual(request["connect_timeout"], 3)
         self.assertEqual(request["read_timeout"], 15)
@@ -84,7 +87,7 @@ class RoutingTests(TestCase):
         self.provider.route((START, FINISH))
         self.provider.route((FINISH, START))
         self.provider_with(profile="driving-hgv").route((START, FINISH))
-        self.provider_with(options={}).route((START, FINISH))
+        self.provider_with(options={"avoid_borders": "all"}).route((START, FINISH))
         self.provider_with(version="v2-adapter-2").route((START, FINISH))
         self.assertEqual(self.transport.call_count, 5)
 

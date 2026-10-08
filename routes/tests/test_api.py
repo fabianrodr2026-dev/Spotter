@@ -205,7 +205,48 @@ class ApiPlanTests(TestCase):
         second, _ = self.plan_with_mocks(body)
         self.assertEqual(second["cache_status"], "hit")
         self.assertEqual(second["plan_id"], first["plan_id"])
+        self.assertEqual(second["routing_attempts"], 0)
         self.assertEqual(self.transport_calls, calls)
+
+    def test_new_usable_station_invalidates_cached_plan(self):
+        start = Coordinate(NYC["latitude"], NYC["longitude"])
+        finish = Coordinate(PHILLY["latitude"], PHILLY["longitude"])
+        self.routes[((start.latitude, start.longitude), (finish.latitude, finish.longitude))] = route_for(
+            (start, finish), (90.0,),
+        )
+        body = {"start": NYC, "finish": PHILLY}
+        first, _ = self.plan_with_mocks(body)
+        station = FuelStation.objects.get(dataset=self.dataset, source_station_id="S1")
+        station.geocoding_status = "review"
+        station.save(update_fields=["geocoding_status"])
+        second, _ = self.plan_with_mocks(body)
+        self.assertEqual(second["cache_status"], "miss")
+        self.assertNotEqual(first["plan_id"], second["plan_id"])
+
+    def test_usa_endpoints_allow_route_through_canada(self):
+        start = Coordinate(NYC["latitude"], NYC["longitude"])
+        finish = Coordinate(PHILLY["latitude"], PHILLY["longitude"])
+        route = route_for((start, finish), (90.0,))
+        route.geometry["coordinates"].insert(1, [-79.3832, 43.6532])
+        from dataclasses import replace
+        route = replace(route, waypoint_indices=(0, 2))
+        self.routes[((start.latitude, start.longitude), (finish.latitude, finish.longitude))] = route
+        payload, status = self.plan_with_mocks({"start": NYC, "finish": PHILLY})
+        self.assertEqual(status, 200)
+        self.assertEqual(payload["route"]["geometry"], route.geometry)
+
+    def test_station_metadata_is_scoped_to_plan_dataset(self):
+        from routes.services.plan_api import _station_details
+        other = FuelPriceDataset.objects.create(
+            sha256="b" * 64, source_filename="other.csv", source_row_count=1,
+        )
+        station = FuelStation.objects.get(dataset=self.dataset, source_station_id="S1")
+        station.pk = None
+        station.dataset = other
+        station.name = "Wrong version"
+        station.save()
+        details = _station_details(["S1"], self.dataset.sha256)
+        self.assertEqual(details["S1"]["name"], "Alpha <Station> & Co")
 
     def test_failed_plan_does_not_create_success_map(self):
         start = Coordinate(NYC["latitude"], NYC["longitude"])

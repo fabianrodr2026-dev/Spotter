@@ -47,6 +47,7 @@ h2 {
 
 #totals dd {
   margin: 0;
+  overflow-wrap: anywhere;
 }
 
 #assumptions {
@@ -66,4 +67,11 @@ h2 {
   margin: 0.75rem 0 0;
   font-size: 0.9rem;
   color: #475569;
+}
+
+@media (max-width: 360px) {
+  #totals {
+    grid-template-columns: minmax(0, 1fr) minmax(0, 0.65fr);
+    gap: 0.35rem 0.5rem;
+  }
 }

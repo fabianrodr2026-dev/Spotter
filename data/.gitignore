@@ -1,0 +1,4 @@
+acceptance-venv/
+acceptance-*.json
+delivery-map-cache/
+acceptance-*.md

@@ -4,7 +4,7 @@ Django API that plans a driving route between contiguous-US coordinates, selects
 
 ## Local setup (PowerShell)
 
-Install Python 3.12.8 and PostgreSQL with the PostGIS extension. Docker Compose is an optional way to provision that database. Django 6.1.2 supports Python 3.12–3.14. This repository selects 3.12.8 because it is the compatible interpreter available on the development machine. The scaffold uses Django's PostgreSQL backend and enables PostGIS with a migration; later spatial queries will use PostGIS functions through that connection. No local GDAL installation is required for this scaffold.
+Install Python 3.12.8 and PostgreSQL with the PostGIS extension. Docker Compose is an optional way to provision that database. Django 6.1.2 supports Python 3.12–3.14. This repository selects 3.12.8 because it is the compatible interpreter available on the development machine. The application uses Django's PostgreSQL backend and enables PostGIS with a migration; spatial queries use PostGIS functions through that connection. No local GDAL installation is required for this scaffold.
 
 ```powershell
 python --version
@@ -39,11 +39,11 @@ $body = @{
 Invoke-RestMethod -Method Post -Uri http://127.0.0.1:8000/api/routes/plan/ -ContentType application/json -Body $body
 ```
 
-Open the returned `map_url` (for example `/map/<plan_id>/`). Refreshing that page reads the cached plan and does **not** call the routing provider again. Browser map tiles use OpenStreetMap with visible attribution and are separate from server-side routing calls ([OSM tile policy](https://operations.osmfoundation.org/policies/tiles/)). Use a dedicated tile provider for heavier traffic. See [CONTRACT.md](CONTRACT.md) for accounting and geographic assumptions.
+Open the returned `map_url` (for example `/map/<plan_id>/`). Refreshing that page reads the cached plan and does **not** call the routing provider again. Browser map tiles use OpenTopoMap with visible OpenStreetMap, elevation-data, and map-style attribution; tile requests are separate from server-side routing calls ([OpenTopoMap use and attribution](https://wiki.opentopomap.org/about)). See [CONTRACT.md](CONTRACT.md) for accounting and geographic assumptions.
 
 ## Fuel-price audit and import
 
-The supplied CSV is read as UTF-8 and identified by the SHA-256 of its original bytes. Retail prices are assumed to be USD per US gallon; the file itself has no unit metadata. The importer keeps every source row with its original values, normalized values, CSV record number, physical line number, status, and dataset hash. It collapses whitespace, uppercases two-letter state/province codes, and retains the raw text. A station ID with one consistent address, city, state, rack ID, and decimal price is imported once; name variants are retained as aliases. If any of those location/rack/price fields conflict for an ID, **all rows for that ID are quarantined** and no station is selected. Invalid rows are rejected with an issue code. The same file hash imports only once.
+The supplied CSV is read as UTF-8 and identified by the SHA-256 of its original bytes. Retail prices are assumed to be USD per US gallon; the file itself has no unit metadata. The importer keeps every source row with its original values, normalized values, CSV record number, physical line number, status, and dataset hash. It collapses whitespace, uppercases two-letter state/province codes, and retains the raw text. A station ID with one consistent address, city, state, rack ID, and decimal price is imported once; name variants are retained as aliases. If any of those location/rack/price fields conflict for an ID, **all rows for that ID are quarantined** and no station is selected. Invalid rows are rejected with an issue code. The same file hash imports only once. Planning uses the latest imported dataset and queries stations from that dataset alone; station names and prices cannot be mixed across CSV versions.
 
 Audit without database access and write the complete conflict report:
 
@@ -65,7 +65,7 @@ For an isolated import test when PostgreSQL/PostGIS is unavailable, use `--setti
 
 Section 4 supplies a setup-only command, persistent result cache, coverage/review reports, and a PostGIS spatial-index migration verified against a running PostGIS database. Offline matching against the bundled enriched OSM sample resolves two stations with exact OSM store-reference evidence, including a highway-exit station. Same-brand city evidence alone cannot verify a station. This verification sample has only two usable stations out of 6,141 and is insufficient for general route optimization. A full national Overpass tile download can improve candidate coverage but does not by itself verify station identity. See [the source and verification record](artifacts/GEOCODING.md).
 
-The selected location source is OpenStreetMap fuel POIs, obtained as resumable 4° Overpass tiles and matched locally. The default endpoint is `GEOCODING_OVERPASS_URL` (French public Overpass by default). This is a one-time setup workflow, not a public Overpass-backed application service. Use one process on one machine. Completed extracts are retained; successful requests are spaced by at least five seconds, failed requests by at least sixty seconds or the server's longer `Retry-After`. There are no automatic failure retries. Empty ocean tiles are kept; an incomplete/error response is never published as the merged snapshot.
+The selected location source is OpenStreetMap fuel POIs, obtained as resumable 4° Overpass tiles and matched locally. The 105-tile national snapshot in `data/geocoding/national/osm-fuel.json` resolves 149 of 6,141 stations (2.43%); [national coverage](artifacts/national-coverage.json) records the results. [The reduced OSM artifact](artifacts/osm-national-relevant.json) contains 968 objects relevant to the imported stations and can reproduce that coverage offline. Most source stations lack sufficient direct identity evidence and remain excluded. The default endpoint is `GEOCODING_OVERPASS_URL` (French public Overpass by default). This is a one-time setup workflow, not a public Overpass-backed application service. Use one process on one machine. Completed extracts are retained; successful requests are spaced by at least five seconds, failed requests by at least sixty seconds or the server's longer `Retry-After`. There are no automatic failure retries. Empty ocean tiles are kept; an incomplete/error response is never published as the merged snapshot.
 
 OpenStreetMap data is stored under [ODbL 1.0 with contributor attribution](https://www.openstreetmap.org/copyright). State polygons come from [Census TIGERweb, 2024 vintage, 1:500,000](https://tigerweb.geo.census.gov/arcgis/rest/services/Generalized_ACS2024/State_County/MapServer/7). Both sources are cached and hashed. The OSM export contains OSM objects, not fuel prices; its attribution and license must accompany redistribution. The original assessment CSV's license is not changed.
 
@@ -96,7 +96,7 @@ $env:SPOTTER_TEST_DB_PATH = "$PWD\geocoding-check.sqlite3"
 .\.venv\Scripts\python.exe manage.py test --settings=config.test_settings
 ```
 
-The second enrichment reuses all 6,141 decisions. With the enriched sample, expect on the order of eight usable stations and contested Amarillo multi-store brands left in review. To verify the production index, run `manage.py test routes.tests.test_geocoding.GeocodingTests.test_postgis_partial_spatial_index_exists_and_is_usable` against configured PostgreSQL/PostGIS with permission to create a test database. That test checks the actual index and query plan; it is explicitly skipped under SQLite.
+The second enrichment reuses all 6,141 decisions. With the small sample, expect two usable stations. With the national artifact, expect 149 usable stations. Contested same-brand stores remain in review. To verify the production index, run `manage.py test routes.tests.test_geocoding.GeocodingTests.test_postgis_partial_spatial_index_exists_and_is_usable` against configured PostgreSQL/PostGIS with permission to create a test database. That test checks the actual index and query plan; it is explicitly skipped under SQLite.
 
 ## Routing integration
 
@@ -121,26 +121,26 @@ Example request:
 ```json
 {
   "start": {"latitude": 40.7128, "longitude": -74.0060},
-  "finish": {"latitude": 34.0522, "longitude": -118.2437},
+  "finish": {"latitude": 25.7617, "longitude": -80.1918},
   "initial_fuel_gallons": 50
 }
 ```
 
-Demo: start the server after migrate/import/enrichment, POST the short NYC→Philadelphia example above, open `map_url`, confirm the route polyline, totals, OSM attribution, and that a browser refresh does not add routing attempts. With the current enriched sample (only a few usable stations), long cross-country live requests often return `insufficient_station_coverage` until a broader verified station set is available.
+Demo: after setup and national enrichment, send [the saved NYC-to-Miami request](artifacts/demo-request.json). The [saved live response](artifacts/demo-plan.json) shows 1,303.2 road miles, two purchases, 80.32 gallons bought, and $254.54 total trip spending in two provider attempts. Open its fresh `map_url` immediately after a new POST; map IDs expire after 30 minutes by default. [Map screenshot](artifacts/demo-map.png) shows the final road route, two stop markers, totals, and attribution. Its OpenTopoMap basemap is shared under CC-BY-SA with the required credits visible in the image. Refreshing the map reads the plan cache without a new route calculation. NYC-to-Los Angeles currently returns `infeasible_fuel` because verified station coverage remains sparse. The application never fabricates fuel stops.
 
 ## Performance and delivery
 
-Plan responses avoid re-reading the CSV; stations come from the database. Stage timings, candidate counts, cache hit/miss, and routing-attempt counts are logged on logger `routes.plan` without credentials. Re-run local mocked benchmarks:
+Plan responses avoid re-reading the CSV; stations come from the database. Stage timings, candidate counts, cache hit/miss, and routing-attempt counts are logged on logger `routes.plan` without credentials. Benchmark the imported, enriched PostGIS data using saved provider responses:
 
 ```powershell
-$env:SPOTTER_TEST_DB_PATH = "$PWD\benchmark-check.sqlite3"
-.\.venv\Scripts\python.exe manage.py migrate --settings=config.test_settings
-.\.venv\Scripts\python.exe manage.py benchmark_plans --settings=config.test_settings --samples 11
+.\.venv\Scripts\python.exe manage.py benchmark_plans --samples 11
 ```
 
-Measured results (mocked routing, LocMem cache, 11 samples) are recorded in [artifacts/PERFORMANCE.md](artifacts/PERFORMANCE.md). On this development machine, warm medians were about 3–4 ms and cold medians about 6–8 ms after the process-local boundary file was loaded; the first boundary load in a process is about 0.5 s. These figures exclude OpenRouteService latency.
+The command replays [provider responses](artifacts/routing-benchmark.json.gz) while measuring actual PostGIS corridor lookup, route projection, optimizer, serialization, and cache behavior. To refresh provider responses with a configured API key, pass `--capture-live`; this makes one live pass per scenario, then repeats local processing. The [measurements](artifacts/PERFORMANCE.md) include 11 cold/warm samples each for short, regional, and NYC-to-Miami trips, plus a cross-country failure, and distinguish local from provider latency. All local medians were below the provisional 1,000 ms target; successful warm medians were below 300 ms. Provider latency is outside that target.
 
-Algorithm assumptions: corridor-heuristic stop selection, greedy purchases on the final verified ordered stops, contiguous-US endpoints, `avoid_borders=all`, at most three routing attempts. Known limitations: sparse usable geocoding coverage in the bundled sample, process-local default cache, OSM tile use for light development only, and no claim of globally optimal station choice across the road network.
+For an intended HTTPS deployment, set `DJANGO_DEBUG=false`, configure a real secret and host list, and enable `DJANGO_SECURE_SSL_REDIRECT`, `DJANGO_SESSION_COOKIE_SECURE`, `DJANGO_CSRF_COOKIE_SECURE`, and an appropriate `DJANGO_SECURE_HSTS_SECONDS` after confirming HTTPS and its subdomain policy. Run `manage.py check --deploy` with those environment values. The defaults are suitable for local HTTP development.
+
+Algorithm assumptions: corridor-heuristic stop selection, greedy purchases on the final verified ordered stops, contiguous-US endpoints, cross-border driving allowed, at most three routing attempts. Known limitations: 149/6,141 usable stations from the national OSM extract, process-local default cache, OSM tile use for light development only, and no claim of globally optimal station choice across the road network.
 
 ### Final acceptance notes
 
